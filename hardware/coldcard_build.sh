@@ -1,6 +1,7 @@
 #!/bin/bash
-# verify_coldcard.sh v2.0.0 - Standalone verification script for Coldcard Hardware Wallet
-# Usage: verify_coldcard.sh --version version --type model [--apk firmware_file] [--cleanup]
+# coldcard_build.sh v2.0.0 - Standardized verification script for Coldcard Hardware Wallet
+# Follows WalletScrutiny reproducible verification standards
+# Usage: coldcard_build.sh --version VERSION --type MODEL [--apk FIRMWARE_FILE]
 
 set -e
 
@@ -17,9 +18,11 @@ echo -e "\033[0m"
 sleep 2
 echo
 
-# Global Constants
-shouldCleanup=false
-workDir="/tmp/coldcard-verification"
+# Global Variables
+SCRIPT_VERSION="v2.0.0"
+BUILD_TYPE="firmware"
+workDir="$(pwd)/coldcard-work"
+RESULTS_FILE="$(pwd)/COMPARISON_RESULTS.yaml"
 custom_firmware=""
 
 # Detect container runtime
@@ -42,27 +45,28 @@ NC='\033[0m'
 
 # Coldcard constants
 repo="https://github.com/Coldcard/firmware.git"
+verdict=""
+exit_code=1
 
 usage() {
   echo 'NAME
-       verify_coldcard.sh - verify Coldcard hardware wallet firmware
+       coldcard_build.sh - verify Coldcard hardware wallet firmware
 
 SYNOPSIS
-       verify_coldcard.sh --version version --type model [--apk firmware_file] [--cleanup]
+       coldcard_build.sh --version VERSION --type MODEL [--apk FIRMWARE_FILE]
 
 DESCRIPTION
-       This command tries to verify firmware builds of Coldcard hardware wallet.
-       Follows the standardized verification script parameters.
+       This command verifies firmware builds of Coldcard hardware wallet.
+       Follows the WalletScrutiny standardized verification script format.
 
        --version   Firmware version (e.g., "5.4.4" or "1.3.4Q")
        --type      Hardware model: mk4 or q1
        --apk       Optional firmware file provided by user instead of downloading
-       --cleanup   Clean up temporary files after testing
 
 EXAMPLES
-       verify_coldcard.sh --version "5.4.4" --type mk4
-       verify_coldcard.sh --version "1.3.4Q" --type q1 --cleanup
-       verify_coldcard.sh --version "5.4.4" --type mk4 --apk /path/to/firmware.dfu'
+       coldcard_build.sh --version "5.4.4" --type mk4
+       coldcard_build.sh --version "1.3.4Q" --type q1
+       coldcard_build.sh --version "5.4.4" --type mk4 --apk /path/to/firmware.dfu'
 }
 
 # Parse arguments
@@ -71,14 +75,7 @@ while [[ "$#" -gt 0 ]]; do
     --version) version="$2"; shift ;;
     --type) model="$2"; shift ;;
     --apk) custom_firmware="$2"; shift ;;
-    --cleanup) shouldCleanup=true ;;
     --help) usage; exit 0 ;;
-    # Legacy support for old parameters
-    -v) version="$2"; shift ;;
-    -m) model="$2"; shift ;;
-    -d) custom_firmware="$2"; shift ;;
-    -c) shouldCleanup=true ;;
-    -h) usage; exit 0 ;;
     *) echo "Unknown argument: $1"; usage; exit 1 ;;
   esac
   shift
@@ -108,7 +105,8 @@ fi
 # Construct full version string based on model and version
 if [[ "$model" == "q1" ]]; then
     # Q1 versions need the Q suffix if not present
-    if [[ ! "$version" =~ Q$ ]]; then
+    # But don't add Q if version already has Q in it (like QX)
+    if [[ ! "$version" =~ Q ]]; then
         version="${version}Q"
     fi
 fi
@@ -120,13 +118,12 @@ echo
 prepare() {
   echo "Setting up verification environment..."
   
-  # Find the full version tag by checking repository tags
   # cleanup any existing work
   rm -rf "$workDir" || true
   mkdir -p "$workDir"
   cd "$workDir"
   
-  echo "Cloning Coldcard firmware repository to find version tag..."
+  echo "Cloning Coldcard firmware repository..."
   git clone $repo firmware
   cd firmware
   
@@ -141,6 +138,7 @@ prepare() {
     echo "Error: Could not find version tag for $version"
     echo "Available tags:"
     git tag | grep -E "v${version}" | head -10
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
@@ -152,6 +150,7 @@ prepare() {
   if [[ -n "$custom_firmware" ]]; then
     if [ ! -f "$custom_firmware" ]; then
       echo "Error: Custom firmware file not found: $custom_firmware"
+      write_results "ftbfs" "" "false" ""
       exit 1
     fi
     PUBLISHED_BIN=$(basename "$custom_firmware")
@@ -179,12 +178,15 @@ prepare() {
   
   # Store the full version for later use
   export FULL_VERSION_TAG="$full_version_tag"
+  export SHORT_VERSION="$short_version"
+  
+  echo -e "${GREEN}Environment prepared${NC}"
 }
 
 download_firmware() {
   echo "Downloading official firmware from Coldcard website..."
   
-  cd releases
+  cd "$workDir/firmware/releases"
   
   if [[ -n "$custom_firmware" ]]; then
     echo "Copying custom firmware file..."
@@ -194,32 +196,37 @@ download_firmware() {
     echo "Downloading: https://coldcard.com/downloads/$PUBLISHED_BIN"
     if ! wget -O "$dfu_filename" "https://coldcard.com/downloads/$PUBLISHED_BIN"; then
       echo -e "${RED}Failed to download official firmware${NC}"
+      write_results "ftbfs" "" "false" ""
       exit 1
     fi
   fi
   
-  echo -e "${GREEN}Official firmware available${NC}"
-  cd ..
+  echo -e "${GREEN}Official firmware downloaded${NC}"
+  cd "$workDir/firmware"
 }
 
 build_firmware() {
   echo "Building Coldcard firmware..."
   
+  cd "$workDir/firmware"
+  
   echo "Building Docker image for Coldcard build environment..."
   cd stm32
   if ! $CONTAINER_CMD build -t coldcard-build - < dockerfile.build; then
     echo -e "${RED}Docker build failed!${NC}"
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
   echo "Running firmware build in container..."
-  cd ..
+  cd "$workDir/firmware"
   if ! $CONTAINER_CMD run \
     --volume $(realpath .):/work/src:ro \
     --volume $(realpath stm32/built):/work/built:rw ${privileges} \
     coldcard-build \
-    sh -c "sh src/stm32/repro-build.sh ${short_version} ${model} ${mkfile}"; then
+    sh -c "sh src/stm32/repro-build.sh ${SHORT_VERSION} ${model} ${mkfile}"; then
     echo -e "${RED}Firmware build failed!${NC}"
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
@@ -229,21 +236,22 @@ build_firmware() {
 compare_firmware() {
   echo "Comparing firmware binaries..."
   
+  cd "$workDir/firmware"
+  
   # Remove signatures and compare hashes
   echo "Removing signatures for comparison..."
   xxd stm32/built/firmware-signed.bin | sed -e 's/^00003f[89abcdef]0: .*/(firmware signature here)/' | xxd -r > firmware-nosig.bin
   xxd stm32/built/check-fw.bin | sed -e 's/^00003f[89abcdef]0: .*/(firmware signature here)/' | xxd -r > ${FULL_VERSION_TAG}-${model}-nosig.bin
   
   echo ""
-  echo "=========================="
+  echo "============================================================"
   echo "Hash of non-signature parts downloaded/compiled:"
-  officialHashUnsigned=$(sha256sum *-v${short_version}*-${model}-nosig.bin | awk '{print $1}')
+  officialHashUnsigned=$(sha256sum *-v${SHORT_VERSION}*-${model}-nosig.bin | awk '{print $1}')
   builtHashUnsigned=$(sha256sum firmware-nosig.bin | awk '{print $1}')
   echo "${officialHashUnsigned}  ${FULL_VERSION_TAG}-${model}-nosig.bin"
   echo "${builtHashUnsigned}  firmware-nosig.bin"
   
   echo ""
-  echo "=========================="
   echo "Hash of the signed firmware:"
   officialHashSigned=$(sha256sum releases/$dfu_filename | awk '{print $1}')
   builtHashSigned=$(sha256sum stm32/built/firmware-signed.dfu | awk '{print $1}')
@@ -251,61 +259,90 @@ compare_firmware() {
   echo "${builtHashSigned}  stm32/built/firmware-signed.dfu"
   
   echo ""
-  echo "=========================="
   echo "VERIFICATION RESULTS:"
   echo "Official firmware (signed):   $officialHashSigned"
   echo "Built firmware (signed):      $builtHashSigned"
   echo "Official firmware (unsigned): $officialHashUnsigned"
   echo "Built firmware (unsigned):    $builtHashUnsigned"
+  echo ""
   
   if [[ "$builtHashUnsigned" == "$officialHashUnsigned" ]]; then
-    echo -e "${GREEN}✓ REPRODUCIBLE: Built firmware matches unsigned content${NC}"
     verdict="reproducible"
+    echo -e "${GREEN}✓ REPRODUCIBLE: Built firmware matches unsigned content${NC}"
+    echo "============================================================"
     exit_code=0
   else
-    echo -e "${RED}✗ NOT REPRODUCIBLE: Unsigned firmware differs${NC}"
     verdict="not_reproducible"
+    echo -e "${RED}✗ NOT REPRODUCIBLE: Unsigned firmware differs${NC}"
+    echo "============================================================"
     exit_code=1
   fi
   
-  echo "=========================="
+  write_results "$verdict" "$builtHashUnsigned" "$([ $exit_code -eq 0 ] && echo 'true' || echo 'false')" "$officialHashUnsigned"
+}
+
+write_results() {
+  local status=$1
+  local hash=$2
+  local match=$3
+  local expected_hash=$4
+  
+  local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%S+0000")
+  
+  local arch=""
+  if [[ "$model" == "mk4" ]]; then
+    arch="arm-cortex-m4"
+  elif [[ "$model" == "q1" ]]; then
+    arch="arm-cortex-m7"
+  fi
+  
+  cat > "$RESULTS_FILE" << EOF
+date: ${timestamp}
+script_version: ${SCRIPT_VERSION}
+build_type: ${BUILD_TYPE}
+results:
+  - architecture: ${arch}
+    firmware_type: ${model}
+    files:
+      - filename: ${FULL_VERSION_TAG:-$version}-${model}-coldcard.dfu
+        hash: ${hash}
+        match: ${match}
+        expected_hash: ${expected_hash}
+        status: ${status}
+EOF
+
+  echo -e "${GREEN}Results written to: $RESULTS_FILE${NC}"
 }
 
 result() {
+  echo ""
   echo "===== Begin Results ====="
   echo "firmware:       Coldcard $model"
   echo "version:        $version"
   echo "type:           $model"
   echo "verdict:        $verdict"
-  echo "officialHashSigned:   $officialHashSigned"
-  echo "builtHashSigned:      $builtHashSigned"
-  echo "officialHashUnsigned: $officialHashUnsigned"
-  echo "builtHashUnsigned:    $builtHashUnsigned"
+  echo "officialHashSigned:   ${officialHashSigned:-N/A}"
+  echo "builtHashSigned:      ${builtHashSigned:-N/A}"
+  echo "officialHashUnsigned: ${officialHashUnsigned:-N/A}"
+  echo "builtHashUnsigned:    ${builtHashUnsigned:-N/A}"
   echo "repository:     $repo"
-  echo "tag:            $FULL_VERSION_TAG"
-  
+  echo "tag:            ${FULL_VERSION_TAG:-N/A}"
+  echo ""
   if [[ "$verdict" == "reproducible" ]]; then
-    echo ""
     echo "✓ The firmware builds reproducibly from source code."
   else
-    echo ""
     echo "✗ The firmware does not build reproducibly."
   fi
-  
   echo "===== End Results ====="
-  
-  if [ "$shouldCleanup" = false ]; then
-    echo ""
-    echo "Verification files available at: $workDir/firmware"
-    echo "- Official firmware: releases/$dfu_filename"
-    echo "- Built firmware: stm32/built/firmware-signed.dfu" 
-    echo "- Unsigned comparison files: *-nosig.bin"
-  fi
+  echo ""
+  echo "Verification files available at: $workDir/firmware"
+  echo "  - Official firmware: releases/$dfu_filename"
+  echo "  - Built firmware: stm32/built/firmware-signed.dfu"
+  echo "Results file: $RESULTS_FILE"
 }
 
 cleanup() {
-  echo "Cleaning up temporary files..."
-  rm -rf "$workDir"
+  echo "Cleaning up Docker resources..."
   $CONTAINER_CMD rmi coldcard-build -f 2>/dev/null || true
   $CONTAINER_CMD image prune -f 2>/dev/null || true
 }
@@ -330,12 +367,10 @@ echo "Comparison completed."
 result
 echo "Verification completed."
 
-if [ "$shouldCleanup" = true ]; then
-  cleanup
-fi
+cleanup
 
 echo
 echo "Coldcard firmware verification finished!"
+echo "COMPARISON_RESULTS.yaml has been generated in the current directory."
 
-# Exit with proper code for automated systems
 exit $exit_code

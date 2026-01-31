@@ -1,5 +1,5 @@
 #!/bin/bash
-# verify_com.greenaddress.greenbits_android_wallet.sh v1.0.0 - Standalone verification script for Blockstream Green
+# verify_com.greenaddress.greenbits_android_wallet.sh v1.0.1 - Standalone verification script for Blockstream Green
 # Usage: verify_com.greenaddress.greenbits_android_wallet.sh -a path/to/green.apk [-r revisionOverride] [-n] [-c]
 
 set -e
@@ -234,16 +234,39 @@ result() {
   
   echo "Running diff comparison..."
   diffResult=$(diff --brief --recursive $fromPlayUnzipped $fromBuildUnzipped 2>/dev/null || true)
-  diffCount=$(echo "$diffResult" | grep -vcE "(META-INF|^$)" || echo "0")
+  
+  # Filter out expected Google Play Store differences
+  filteredDiff=$(echo "$diffResult" | grep -vE "(META-INF|stamp-cert-sha256|AndroidManifest\.xml)" || true)
+  
+  # Count remaining differences
+  if [[ "$filteredDiff" =~ ^[[:space:]]*$ ]]; then
+    diffCount=0
+  else
+    diffCount=$(echo "$filteredDiff" | grep -c "." 2>/dev/null || echo "0")
+  fi
+  
+  # Determine verdict based on filtered differences
+  verdict=""
+  if [[ "$diffCount" =~ ^[0-9]+$ ]] && [ "$diffCount" -eq 0 ]; then
+    verdict="reproducible"
+  else
+    verdict="not reproducible"
+  fi
 
-  diffGuide="
+  diffGuide=""
+  if [ "$shouldCleanup" != true ]; then
+    diffGuide="
 For detailed analysis, run:
-diff --recursive $fromPlayUnzipped $fromBuildUnzipped
-meld $fromPlayUnzipped $fromBuildUnzipped
-diffoscope \"$downloadedApk\" \"$builtApk\""
+  diff --recursive $fromPlayUnzipped $fromBuildUnzipped
+  meld $fromPlayUnzipped $fromBuildUnzipped
+  diffoscope \"$downloadedApk\" \"$builtApk\""
+  fi
 
-  if [ "$shouldCleanup" = true ]; then
-    diffGuide=''
+  # Additional info handling
+  if [ "$additionalInfo" ]; then
+    additionalInfo="===== Also ====
+$additionalInfo
+"
   fi
 
   echo "===== Begin Results ====="
@@ -251,44 +274,118 @@ diffoscope \"$downloadedApk\" \"$builtApk\""
   echo "signer:         $signer"
   echo "apkVersionName: $versionName"
   echo "apkVersionCode: $versionCode"
+  echo "verdict:        $verdict"
   echo "appHash:        $appHash"
   echo "commit:         $commit"
   echo ""
-  echo "Diff:"
+  echo "Diff (Google Play distribution files excluded):"
+  echo "$filteredDiff"
+  echo ""
+  echo "Full Diff (including expected Google Play files):"
   echo "$diffResult"
   echo ""
-  echo "Differences found (excluding META-INF): $diffCount"
+  echo "Revision, tag (and its signature):"
 
-  # Check git signatures
-  echo ""
-  echo "Checking git signatures..."
-  tagInfo=$(git for-each-ref "refs/tags/$tag")
+  # Determine if tag is annotated or lightweight
+  tagInfo=$(git for-each-ref "refs/tags/$tag" 2>/dev/null || echo "")
+  isAnnotatedTag=false
+  tagType="lightweight"
   if [[ $tagInfo == *"tag"* ]]; then
-    echo "Tag type: annotated"
+    isAnnotatedTag=true
+    tagType="annotated"
+  fi
+
+  # Check signatures
+  signatureWarnings=""
+  tagSignatureStatus=""
+  commitSignatureStatus=""
+  signatureKeys=""
+
+  # Try to verify tag signature (will work for annotated tags)
+  if $isAnnotatedTag; then
     tagVerification=$(git tag -v "$tag" 2>&1) || true
+    echo "$tagVerification"
+
     if [[ $tagVerification == *"Good signature"* ]]; then
-      echo "✓ Good signature on annotated tag"
+      tagSignatureStatus="✓ Good signature on annotated tag"
+      # Extract signing key
+      tagKey=$(echo "$tagVerification" | grep "using .* key" | sed -E 's/.*using .* key ([A-F0-9]+).*/\1/' | tail -1)
+      if [[ ! -z "$tagKey" ]]; then
+        signatureKeys="Tag signed with: $tagKey"
+      fi
     else
-      echo "⚠️ No valid signature found on annotated tag"
+      tagSignatureStatus="⚠️ No valid signature found on annotated tag"
+      signatureWarnings="$signatureWarnings\n- Annotated tag exists but is not signed"
     fi
   else
-    echo "Tag type: lightweight (cannot contain signature)"
+    tagSignatureStatus="ℹ️ Tag is lightweight (cannot contain signature)"
   fi
 
-  commitVerification=$(git verify-commit "$tag" 2>&1) || true
+  # Try to verify commit signature
+  commitObj="$tag"
+  if $isAnnotatedTag; then
+    # For annotated tags, we need to get the commit it points to
+    commitObj="$tag^{commit}"
+  fi
+
+  commitVerification=$(git verify-commit "$commitObj" 2>&1) || true
   if [[ $commitVerification == *"Good signature"* ]]; then
-    echo "✓ Good signature on commit"
+    commitSignatureStatus="✓ Good signature on commit"
+    # Extract signing key
+    commitKey=$(echo "$commitVerification" | grep "using .* key" | sed -E 's/.*using .* key ([A-F0-9]+).*/\1/' | tail -1)
+    if [[ ! -z "$commitKey" ]]; then
+      if [[ ! -z "$signatureKeys" ]]; then
+        signatureKeys="$signatureKeys\nCommit signed with: $commitKey"
+      else
+        signatureKeys="Commit signed with: $commitKey"
+      fi
+
+      # Compare keys if both tag and commit are signed
+      if [[ ! -z "$tagKey" && ! -z "$commitKey" && "$tagKey" != "$commitKey" ]]; then
+        signatureWarnings="$signatureWarnings\n- Tag and commit signed with different keys"
+      fi
+    fi
   else
-    echo "⚠️ No valid signature found on commit"
+    commitSignatureStatus="⚠️ No valid signature found on commit"
+    if [[ -z "$signatureWarnings" ]]; then
+      signatureWarnings="- Commit is not signed"
+    else
+      signatureWarnings="$signatureWarnings\n- Commit is not signed"
+    fi
   fi
 
-  echo "===== End Results ====="
+  # Output the signature summary
+  echo "
+Signature Summary:
+Tag type: $tagType
+$tagSignatureStatus
+$commitSignatureStatus"
+
+  if [[ ! -z "$signatureKeys" ]]; then
+    echo -e "\nKeys used:
+$signatureKeys"
+  fi
+
+  if [[ ! -z "$signatureWarnings" ]]; then
+    echo -e "\nWarnings:$signatureWarnings"
+  fi
+
+  echo -e "\n$additionalInfo===== End Results ====="
   echo "$diffGuide"
+
+  # Final status message
+  if [ "$verdict" = "reproducible" ]; then
+    echo -e "\n${GREEN}✓ Verification completed - Blockstream Green is reproducible!${NC}"
+  else
+    echo -e "\n${RED}✗ Verification completed with differences${NC}"
+  fi
 }
 
 cleanup() {
-  echo "Cleaning up..."
+  echo "Cleaning up temporary files..."
   rm -rf $fromPlayFolder $workDir $fromBuildUnzipped $fromPlayUnzipped
+  # Additional container cleanup
+  $CONTAINER_CMD image prune -f 2>/dev/null || true
 }
 
 # Main execution

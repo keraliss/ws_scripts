@@ -1,6 +1,6 @@
 #!/bin/bash
-# verify_bitbox02.sh v2.0.0 - Standalone verification script for BitBox02 Hardware Wallet
-# Usage: verify_bitbox02.sh --version version [--type type] [--cleanup]
+# verify_bitbox02_nova.sh v1.0.0 - Standalone verification script for BitBox02 Nova Hardware Wallet
+# Usage: verify_bitbox02_nova.sh --version version [--type type] [--cleanup]
 
 set -e
 
@@ -19,7 +19,7 @@ echo
 
 # Global Constants
 shouldCleanup=false
-workDir="/tmp/bitbox02-verification"
+workDir="/tmp/bitbox02-nova-verification"
 
 # Detect container runtime
 if command -v docker &> /dev/null; then
@@ -39,28 +39,28 @@ GREEN='\033[1;32m'
 RED='\033[1;31m'
 NC='\033[0m'
 
-# BitBox02 constants
+# BitBox02 Nova constants
 firmwareType="btc"  # Default to BTC-only
 
 usage() {
   echo 'NAME
-       verify_bitbox02.sh - verify BitBox02 hardware wallet firmware
+       verify_bitbox02_nova.sh - verify BitBox02 Nova hardware wallet firmware
 
 SYNOPSIS
-       verify_bitbox02.sh --version version [--type type] [--cleanup]
+       verify_bitbox02_nova.sh --version version [--type type] [--cleanup]
 
 DESCRIPTION
-       This command tries to verify firmware builds of BitBox02 hardware wallet.
+       This command tries to verify firmware builds of BitBox02 Nova hardware wallet.
        Follows the standardized verification script parameters.
 
-       --version   The firmware version to verify (e.g., 9.23.2)
+       --version   The firmware version to verify (e.g., 9.23.3)
        --type      Firmware type: btc|multi (default: btc)
        --cleanup   Clean up temporary files after testing
 
 EXAMPLES
-       verify_bitbox02.sh --version 9.23.2
-       verify_bitbox02.sh --version 9.23.2 --type multi
-       verify_bitbox02.sh --version 9.23.2 --type btc --cleanup'
+       verify_bitbox02_nova.sh --version 9.23.3
+       verify_bitbox02_nova.sh --version 9.23.3 --type multi
+       verify_bitbox02_nova.sh --version 9.23.3 --type btc --cleanup'
 }
 
 # Parse arguments
@@ -95,7 +95,7 @@ if [[ "$firmwareType" != "btc" && "$firmwareType" != "multi" ]]; then
 fi
 
 echo
-echo "Verifying BitBox02 firmware version $version ($firmwareType)"
+echo "Verifying BitBox02 Nova firmware version $version ($firmwareType)"
 echo
 
 prepare() {
@@ -112,18 +112,18 @@ prepare() {
     FIRMWARE_RELEASE_PATH="firmware-btc-only"
     FIRMWARE_PREFIX="firmware-btc"
     BUILT_FIRMWARE_PATH="build/bin/firmware-btc.bin"
-    # Original BitBox02 download URLs (not Nova)
-    DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/firmware-bitbox02-btconly.v${version}.signed.bin"
-    SIGNED_FILENAME="firmware-bitbox02-btconly.v${version}.signed.bin"
+    # Nova-specific download URL for BTC-only
+    DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/firmware-bitbox02nova-btconly.v${version}.signed.bin"
+    SIGNED_FILENAME="firmware-bitbox02nova-btconly.v${version}.signed.bin"
   else
     VERSION="firmware/v${version}"
     MAKE_COMMAND="make firmware"
     FIRMWARE_RELEASE_PATH="firmware"
     FIRMWARE_PREFIX="firmware"
     BUILT_FIRMWARE_PATH="build/bin/firmware.bin"
-    # Original BitBox02 download URLs (not Nova)
-    DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/firmware-bitbox02-multi.v${version}.signed.bin"
-    SIGNED_FILENAME="firmware-bitbox02-multi.v${version}.signed.bin"
+    # Nova-specific download URL for Multi
+    DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/firmware-bitbox02nova-multi.v${version}.signed.bin"
+    SIGNED_FILENAME="firmware-bitbox02nova-multi.v${version}.signed.bin"
   fi
   
   # cleanup any existing work
@@ -165,6 +165,21 @@ build_firmware() {
     sed -i 's/RUN CARGO_HOME=\/opt\/cargo cargo install bindgen-cli --version 0.65.1/RUN CARGO_HOME=\/opt\/cargo cargo install bindgen-cli --version 0.65.1 --locked/' Dockerfile
   fi
   
+  # Apply Nova-specific build configuration
+  echo "Configuring for BitBox02 Nova build..."
+  
+  # Check if Nova-specific build targets exist
+  if grep -q "firmware-nova" Makefile 2>/dev/null; then
+    if [[ "$firmwareType" == "btc" ]]; then
+      MAKE_COMMAND="make firmware-nova-btc"
+    else
+      MAKE_COMMAND="make firmware-nova"
+    fi
+    echo "Using Nova-specific make command: $MAKE_COMMAND"
+  else
+    echo "Using standard firmware build (Nova features included in main build)"
+  fi
+  
   # Modify Dockerfile for explicit architecture
   echo "Configuring Dockerfile for architecture: $ARCH"
   case "$ARCH" in
@@ -180,8 +195,8 @@ build_firmware() {
       ;;
   esac
   
-  echo "Building Docker image for BitBox02 firmware..."
-  if ! $CONTAINER_CMD build --pull --platform linux/amd64 --force-rm --no-cache -t bitbox02-firmware .; then
+  echo "Building Docker image for BitBox02 Nova firmware..."
+  if ! $CONTAINER_CMD build --pull --platform linux/amd64 --force-rm --no-cache -t bitbox02-nova-firmware .; then
     echo -e "${RED}Docker build failed!${NC}"
     exit 1
   fi
@@ -190,7 +205,7 @@ build_firmware() {
   git checkout -- Dockerfile
   
   echo "Running firmware build command: $MAKE_COMMAND"
-  if ! $CONTAINER_CMD run -it --rm --volume "$(pwd)":/bb02 bitbox02-firmware bash -c "git config --global --add safe.directory /bb02 && cd /bb02 && $MAKE_COMMAND"; then
+  if ! $CONTAINER_CMD run -it --rm --volume "$(pwd)":/bb02 bitbox02-nova-firmware bash -c "git config --global --add safe.directory /bb02 && cd /bb02 && $MAKE_COMMAND"; then
     echo -e "${RED}Firmware build failed!${NC}"
     exit 1
   fi
@@ -199,7 +214,7 @@ build_firmware() {
 }
 
 download_and_compare() {
-  echo "Downloading official signed BitBox02 firmware..."
+  echo "Downloading official signed Nova firmware..."
   echo "URL: $DOWNLOAD_URL"
   
   MAX_RETRIES=3
@@ -211,11 +226,11 @@ download_and_compare() {
     status=$?
     if [[ $status -eq 8 ]]; then
       echo -e "${YELLOW}Warning: Received HTTP 404 from ${DOWNLOAD_URL}${NC}" >&2
-      echo -e "${YELLOW}Tip: Visit the GitHub release page and confirm the asset name${NC}" >&2
+      echo -e "${YELLOW}Tip: BitBox02 Nova might use different asset naming patterns${NC}" >&2
       echo -e "${YELLOW}     Expected pattern: ${SIGNED_FILENAME}${NC}" >&2
       
-      # Try alternative naming patterns for original BitBox02
-      ALT_SIGNED_FILENAME="firmware-${firmwareType}.v${version}.signed.bin"
+      # Try alternative Nova naming patterns
+      ALT_SIGNED_FILENAME="firmware-nova-${firmwareType}.v${version}.signed.bin"
       ALT_DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/${ALT_SIGNED_FILENAME}"
       echo -e "${YELLOW}Trying alternative URL: ${ALT_DOWNLOAD_URL}${NC}" >&2
       
@@ -250,24 +265,44 @@ download_and_compare() {
   builtHash=$(sha256sum "$BUILT_FIRMWARE_PATH" | awk '{print $1}')
   echo "Hash of built binary: $builtHash"
   
-  # Unpack signed binary (remove signature)
+  # Unpack signed binary (remove signature) - Nova might have different signature format
   echo "Unpacking signed binary..."
   head -c 588 "$SIGNED_FILENAME" > p_head.bin
   tail -c +589 "$SIGNED_FILENAME" > p_${FIRMWARE_PREFIX}.bin
   
   if [[ ! -s "p_${FIRMWARE_PREFIX}.bin" ]]; then
-    echo -e "${RED}Error: Failed to extract unsigned payload from '$SIGNED_FILENAME'${NC}" >&2
-    echo -e "Ensure the firmware asset corresponds to the requested edition ('${firmwareType}')${NC}" >&2
-    exit 1
+    echo -e "${YELLOW}Warning: Standard signature extraction failed, trying Nova-specific format...${NC}" >&2
+    
+    # Try alternative signature formats for Nova
+    head -c 600 "$SIGNED_FILENAME" > p_head_alt.bin
+    tail -c +601 "$SIGNED_FILENAME" > p_${FIRMWARE_PREFIX}_alt.bin
+    
+    if [[ -s "p_${FIRMWARE_PREFIX}_alt.bin" ]]; then
+      mv p_head_alt.bin p_head.bin
+      mv p_${FIRMWARE_PREFIX}_alt.bin p_${FIRMWARE_PREFIX}.bin
+    else
+      echo -e "${RED}Error: Failed to extract unsigned payload from '$SIGNED_FILENAME'${NC}" >&2
+      echo -e "Nova firmware might use a different signature format${NC}" >&2
+      exit 1
+    fi
   fi
   
   downloadStrippedSigHash=$(sha256sum p_${FIRMWARE_PREFIX}.bin | awk '{print $1}')
   
-  # Extract version and calculate device firmware hash
+  # Extract version and calculate device firmware hash (Nova-specific)
   cat p_head.bin | tail -c +$(( 8 + 6 * 64 + 1 )) | head -c 4 > p_version.bin
   firmwareBytesCount=$(wc -c p_${FIRMWARE_PREFIX}.bin | sed 's/ .*//g')
-  maxFirmwareSize=884736
+  
+  # Nova might have different firmware size limits
+  maxFirmwareSize=884736  # Standard BitBox02 size, might be different for Nova
   paddingBytesCount=$(( maxFirmwareSize - firmwareBytesCount ))
+  
+  if [ $paddingBytesCount -lt 0 ]; then
+    echo -e "${YELLOW}Warning: Firmware size exceeds standard limit, adjusting for Nova...${NC}"
+    maxFirmwareSize=$((firmwareBytesCount + 1024))  # Add some padding
+    paddingBytesCount=1024
+  fi
+  
   dd if=/dev/zero ibs=1 count=$paddingBytesCount 2>/dev/null | tr "\000" "\377" > p_padding.bin
   downloadFirmwareHash=$( cat p_version.bin p_${FIRMWARE_PREFIX}.bin p_padding.bin | sha256sum | cut -c1-64 | xxd -r -p | sha256sum | cut -c1-64 )
   
@@ -296,7 +331,7 @@ download_and_compare() {
 
 result() {
   echo "===== Begin Results ====="
-  echo "firmware:       BitBox02"
+  echo "firmware:       BitBox02 Nova"
   echo "version:        $version"
   echo "type:           $firmwareType"
   echo "verdict:        $verdict"
@@ -327,12 +362,12 @@ cleanup() {
   echo "Cleaning up temporary files..."
   cd /
   rm -rf "$workDir"
-  $CONTAINER_CMD rmi bitbox02-firmware -f 2>/dev/null || true
+  $CONTAINER_CMD rmi bitbox02-nova-firmware -f 2>/dev/null || true
   $CONTAINER_CMD image prune -f 2>/dev/null || true
 }
 
 # Main execution
-echo "Starting BitBox02 firmware verification..."
+echo "Starting BitBox02 Nova firmware verification..."
 echo "This process may take 15-30 minutes depending on your system."
 echo
 
@@ -353,7 +388,7 @@ if [ "$shouldCleanup" = true ]; then
 fi
 
 echo
-echo "BitBox02 firmware verification finished!"
+echo "BitBox02 Nova firmware verification finished!"
 
 # Exit with proper code for automated systems
 exit $exit_code

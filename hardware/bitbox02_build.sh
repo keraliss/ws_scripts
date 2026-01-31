@@ -1,6 +1,7 @@
 #!/bin/bash
-# verify_bitbox02.sh v2.0.0 - Standalone verification script for BitBox02 Hardware Wallet
-# Usage: verify_bitbox02.sh --version version [--type type] [--cleanup]
+# bitbox02_build.sh v2.0.0 - Standardized verification script for BitBox02 Hardware Wallet
+# Follows WalletScrutiny reproducible verification standards
+# Usage: bitbox02_build.sh --version VERSION [--type TYPE]
 
 set -e
 
@@ -17,9 +18,11 @@ echo -e "\033[0m"
 sleep 2
 echo
 
-# Global Constants
-shouldCleanup=false
-workDir="/tmp/bitbox02-verification"
+# Global Variables
+SCRIPT_VERSION="v2.0.0"
+BUILD_TYPE="firmware"
+workDir="$(pwd)/bitbox02-work"
+RESULTS_FILE="$(pwd)/COMPARISON_RESULTS.yaml"
 
 # Detect container runtime
 if command -v docker &> /dev/null; then
@@ -41,26 +44,26 @@ NC='\033[0m'
 
 # BitBox02 constants
 firmwareType="btc"  # Default to BTC-only
+verdict=""
+exit_code=1
 
 usage() {
   echo 'NAME
-       verify_bitbox02.sh - verify BitBox02 hardware wallet firmware
+       bitbox02_build.sh - verify BitBox02 hardware wallet firmware
 
 SYNOPSIS
-       verify_bitbox02.sh --version version [--type type] [--cleanup]
+       bitbox02_build.sh --version VERSION [--type TYPE]
 
 DESCRIPTION
-       This command tries to verify firmware builds of BitBox02 hardware wallet.
-       Follows the standardized verification script parameters.
+       This command verifies firmware builds of BitBox02 hardware wallet.
+       Follows the WalletScrutiny standardized verification script format.
 
-       --version   The firmware version to verify (e.g., 9.23.2)
+       --version   Firmware version (e.g., "9.23.2")
        --type      Firmware type: btc|multi (default: btc)
-       --cleanup   Clean up temporary files after testing
 
 EXAMPLES
-       verify_bitbox02.sh --version 9.23.2
-       verify_bitbox02.sh --version 9.23.2 --type multi
-       verify_bitbox02.sh --version 9.23.2 --type btc --cleanup'
+       bitbox02_build.sh --version 9.23.2
+       bitbox02_build.sh --version 9.23.2 --type multi'
 }
 
 # Parse arguments
@@ -68,13 +71,7 @@ while [[ "$#" -gt 0 ]]; do
   case $1 in
     --version) version="$2"; shift ;;
     --type) firmwareType="$2"; shift ;;
-    --cleanup) shouldCleanup=true ;;
     --help) usage; exit 0 ;;
-    # Legacy support for old parameters
-    -v) version="$2"; shift ;;
-    -t) firmwareType="$2"; shift ;;
-    -c) shouldCleanup=true ;;
-    -h) usage; exit 0 ;;
     *) echo "Unknown argument: $1"; usage; exit 1 ;;
   esac
   shift
@@ -112,7 +109,6 @@ prepare() {
     FIRMWARE_RELEASE_PATH="firmware-btc-only"
     FIRMWARE_PREFIX="firmware-btc"
     BUILT_FIRMWARE_PATH="build/bin/firmware-btc.bin"
-    # Original BitBox02 download URLs (not Nova)
     DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/firmware-bitbox02-btconly.v${version}.signed.bin"
     SIGNED_FILENAME="firmware-bitbox02-btconly.v${version}.signed.bin"
   else
@@ -121,7 +117,6 @@ prepare() {
     FIRMWARE_RELEASE_PATH="firmware"
     FIRMWARE_PREFIX="firmware"
     BUILT_FIRMWARE_PATH="build/bin/firmware.bin"
-    # Original BitBox02 download URLs (not Nova)
     DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/firmware-bitbox02-multi.v${version}.signed.bin"
     SIGNED_FILENAME="firmware-bitbox02-multi.v${version}.signed.bin"
   fi
@@ -134,10 +129,13 @@ prepare() {
   echo "Using version tag: $VERSION"
   echo "Make command: $MAKE_COMMAND"
   echo "Download URL: $DOWNLOAD_URL"
+  echo -e "${GREEN}Environment prepared${NC}"
 }
 
 build_firmware() {
   echo "Cloning BitBox02 firmware repository..."
+  
+  cd "$workDir"
   
   MAX_RETRIES=3
   retry_count=0
@@ -148,6 +146,7 @@ build_firmware() {
     retry_count=$((retry_count + 1))
     if [ $retry_count -eq $MAX_RETRIES ]; then
       echo -e "${RED}Failed to clone repository after $MAX_RETRIES attempts${NC}"
+      write_results "ftbfs" "" "false" ""
       exit 1
     fi
     echo "Clone failed, retrying in 5 seconds..."
@@ -176,6 +175,7 @@ build_firmware() {
       ;;
     *)
       echo -e "${RED}Unsupported architecture: $ARCH${NC}"
+      write_results "ftbfs" "" "false" ""
       exit 1
       ;;
   esac
@@ -183,6 +183,7 @@ build_firmware() {
   echo "Building Docker image for BitBox02 firmware..."
   if ! $CONTAINER_CMD build --pull --platform linux/amd64 --force-rm --no-cache -t bitbox02-firmware .; then
     echo -e "${RED}Docker build failed!${NC}"
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
@@ -192,6 +193,7 @@ build_firmware() {
   echo "Running firmware build command: $MAKE_COMMAND"
   if ! $CONTAINER_CMD run -it --rm --volume "$(pwd)":/bb02 bitbox02-firmware bash -c "git config --global --add safe.directory /bb02 && cd /bb02 && $MAKE_COMMAND"; then
     echo -e "${RED}Firmware build failed!${NC}"
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
@@ -202,6 +204,8 @@ download_and_compare() {
   echo "Downloading official signed BitBox02 firmware..."
   echo "URL: $DOWNLOAD_URL"
   
+  cd "$workDir/temp"
+  
   MAX_RETRIES=3
   retry_count=0
   while [ $retry_count -lt $MAX_RETRIES ]; do
@@ -211,10 +215,8 @@ download_and_compare() {
     status=$?
     if [[ $status -eq 8 ]]; then
       echo -e "${YELLOW}Warning: Received HTTP 404 from ${DOWNLOAD_URL}${NC}" >&2
-      echo -e "${YELLOW}Tip: Visit the GitHub release page and confirm the asset name${NC}" >&2
-      echo -e "${YELLOW}     Expected pattern: ${SIGNED_FILENAME}${NC}" >&2
       
-      # Try alternative naming patterns for original BitBox02
+      # Try alternative naming patterns
       ALT_SIGNED_FILENAME="firmware-${firmwareType}.v${version}.signed.bin"
       ALT_DOWNLOAD_URL="https://github.com/BitBoxSwiss/bitbox02-firmware/releases/download/${FIRMWARE_RELEASE_PATH}%2Fv${version}/${ALT_SIGNED_FILENAME}"
       echo -e "${YELLOW}Trying alternative URL: ${ALT_DOWNLOAD_URL}${NC}" >&2
@@ -227,8 +229,7 @@ download_and_compare() {
     retry_count=$((retry_count + 1))
     if [ $retry_count -eq $MAX_RETRIES ]; then
       echo -e "${RED}Failed to download firmware after $MAX_RETRIES attempts${NC}" >&2
-      echo "You may need to manually download the asset and place it in the working directory" >&2
-      echo "Check GitHub releases page: https://github.com/BitBoxSwiss/bitbox02-firmware/releases" >&2
+      write_results "ftbfs" "" "false" ""
       exit 1
     fi
     echo "Download failed, retrying in 5 seconds..."
@@ -237,6 +238,7 @@ download_and_compare() {
   
   if [[ ! -s "$SIGNED_FILENAME" ]]; then
     echo -e "${RED}Error: Downloaded asset '$SIGNED_FILENAME' is missing or empty${NC}" >&2
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
@@ -257,7 +259,7 @@ download_and_compare() {
   
   if [[ ! -s "p_${FIRMWARE_PREFIX}.bin" ]]; then
     echo -e "${RED}Error: Failed to extract unsigned payload from '$SIGNED_FILENAME'${NC}" >&2
-    echo -e "Ensure the firmware asset corresponds to the requested edition ('${firmwareType}')${NC}" >&2
+    write_results "ftbfs" "" "false" ""
     exit 1
   fi
   
@@ -280,30 +282,61 @@ download_and_compare() {
   echo "Firmware as shown in device: $downloadFirmwareHash"
   echo "                            (double sha256 over version,"
   echo "                             firmware and padding)"
-  echo "============================================================"
+  echo ""
   
   # Determine verdict
   if [[ "$downloadStrippedSigHash" == "$builtHash" ]]; then
     verdict="reproducible"
     echo -e "${GREEN}✓ REPRODUCIBLE: Built firmware matches unsigned content${NC}"
+    echo "============================================================"
     exit_code=0
   else
     verdict="not_reproducible"
     echo -e "${RED}✗ NOT REPRODUCIBLE: Firmware hashes differ${NC}"
+    echo "============================================================"
     exit_code=1
   fi
+  
+  write_results "$verdict" "$builtHash" "$([ $exit_code -eq 0 ] && echo 'true' || echo 'false')" "$downloadStrippedSigHash"
+}
+
+write_results() {
+  local status=$1
+  local hash=$2
+  local match=$3
+  local expected_hash=$4
+  
+  local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%S+0000")
+  
+  cat > "$RESULTS_FILE" << EOF
+date: ${timestamp}
+script_version: ${SCRIPT_VERSION}
+build_type: ${BUILD_TYPE}
+results:
+  - architecture: arm-cortex-m4
+    firmware_type: ${firmwareType}
+    files:
+      - filename: firmware-bitbox02-${firmwareType}.v${version}.signed.bin
+        hash: ${hash}
+        match: ${match}
+        expected_hash: ${expected_hash}
+        status: ${status}
+EOF
+
+  echo -e "${GREEN}Results written to: $RESULTS_FILE${NC}"
 }
 
 result() {
+  echo ""
   echo "===== Begin Results ====="
   echo "firmware:       BitBox02"
   echo "version:        $version"
   echo "type:           $firmwareType"
   echo "verdict:        $verdict"
-  echo "signedHash:     $signedHash"
-  echo "builtHash:      $builtHash"
-  echo "unsignedHash:   $downloadStrippedSigHash"
-  echo "deviceHash:     $downloadFirmwareHash"
+  echo "signedHash:     ${signedHash:-N/A}"
+  echo "builtHash:      ${builtHash:-N/A}"
+  echo "unsignedHash:   ${downloadStrippedSigHash:-N/A}"
+  echo "deviceHash:     ${downloadFirmwareHash:-N/A}"
   echo "repository:     https://github.com/BitBoxSwiss/bitbox02-firmware"
   echo "tag:            $VERSION"
   echo ""
@@ -313,20 +346,15 @@ result() {
     echo "✗ The firmware does not build reproducibly."
   fi
   echo "===== End Results ====="
-  
-  if [ "$shouldCleanup" = false ]; then
-    echo ""
-    echo "Verification files available at: $workDir/temp"
-    echo "- Built firmware: $BUILT_FIRMWARE_PATH"
-    echo "- Downloaded firmware: $SIGNED_FILENAME"
-    echo "- Unsigned comparison files: p_*.bin"
-  fi
+  echo ""
+  echo "Verification files available at: $workDir/temp"
+  echo "  - Built firmware: $BUILT_FIRMWARE_PATH"
+  echo "  - Downloaded firmware: $SIGNED_FILENAME"
+  echo "Results file: $RESULTS_FILE"
 }
 
 cleanup() {
-  echo "Cleaning up temporary files..."
-  cd /
-  rm -rf "$workDir"
+  echo "Cleaning up Docker resources..."
   $CONTAINER_CMD rmi bitbox02-firmware -f 2>/dev/null || true
   $CONTAINER_CMD image prune -f 2>/dev/null || true
 }
@@ -348,12 +376,10 @@ echo "Comparison completed."
 result
 echo "Verification completed."
 
-if [ "$shouldCleanup" = true ]; then
-  cleanup
-fi
+cleanup
 
 echo
 echo "BitBox02 firmware verification finished!"
+echo "COMPARISON_RESULTS.yaml has been generated in the current directory."
 
-# Exit with proper code for automated systems
 exit $exit_code

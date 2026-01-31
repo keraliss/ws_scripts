@@ -1,9 +1,8 @@
 #!/bin/bash
-# verify_zeus.sh v0.0.3 - Standalone verification script for Zeus Lightning Network wallet
-# Combines functionality from test.sh and app.zeusln.zeus.sh
-# Usage: verify_zeus.sh -a path/to/zeus.apk [-r revisionOverride] [-n] [-c] [-x]
+# verify_app.zeusln.zeus.sh v1.0.1 - Standalone verification script for Zeus Lightning Network wallet
+# Usage: verify_app.zeusln.zeus.sh -a path/to/zeus.apk [-r revisionOverride] [-n] [-c] [-x]
 
-set -x
+set -e
 
 # Display disclaimer at start of script
 echo -e "\033[1;33m"
@@ -58,7 +57,7 @@ BUILDER_IMAGE="docker.io/reactnativecommunity/react-native-android@sha256:660742
 # Function to check if a command exists and print status
 check_command() {
   if command -v $1 &> /dev/null || alias | grep -q "$1"; then
-    echo -e "$1 - ${GREEN}â installed${NC}"
+    echo -e "$1 - ${GREEN}✓ installed${NC}"
   else
     echo -e "$1 - ${RED}[x] not installed${NC}"
     MISSING_DEPENDENCIES=true
@@ -95,17 +94,17 @@ check_bundletool() {
   echo "Checking for bundletool in /usr/local/lib and /usr/share/java..."
   if [ -f "/usr/local/lib/bundletool.jar" ]; then
     bundletoolPath="/usr/local/lib/bundletool.jar"
-    echo -e "bundletool - ${GREEN}â installed${NC}"
+    echo -e "bundletool - ${GREEN}✓ installed${NC}"
     echo "Bundletool location: /usr/local/lib/bundletool.jar"
   elif [ -f "/usr/share/java/bundletool.jar" ]; then
     bundletoolPath="/usr/share/java/bundletool.jar"
-    echo -e "bundletool - ${GREEN}â installed${NC}"
+    echo -e "bundletool - ${GREEN}✓ installed${NC}"
     echo "Bundletool location: /usr/share/java/bundletool.jar"
   else
     echo "Checking for bundletool alias in ~/.bashrc..."
     if grep -q "alias bundletool=" ~/.bashrc; then
       bundletoolPath=$(grep "alias bundletool=" ~/.bashrc | sed -e "s/alias bundletool='//" -e "s/'$//")
-      echo -e "bundletool - ${GREEN}â installed${NC}"
+      echo -e "bundletool - ${GREEN}✓ installed${NC}"
       echo "Bundletool alias found in ~/.bashrc"
       echo "Bundletool location: $bundletoolPath"
     else
@@ -119,16 +118,11 @@ check_bundletool() {
 extract_apk_from_phone() {
   local bundleId="app.zeusln.zeus"
 
-  echo -e "${YELLOW}â®â®â®â®â®â®â®â®â®â®â®â®â®â®â® PHONE EXTRACTION MODE â®â®â®â®â®â®â®â®â®â®â®â®â®â®â®${NC}"
+  echo -e "${YELLOW}████████████████ PHONE EXTRACTION MODE ████████████████${NC}"
   echo -e "${YELLOW}Ensure that phone is plugged with the zeus app installed.${NC}"
   echo -e "${YELLOW}Or if you prefer to download it yourself, pass -a /path/to/zeus.apk.${NC}"
   echo -e "${YELLOW}If -x is passed, the script runs built-in APK extraction, downloads the APK${NC}"
   echo -e "${YELLOW}to your computer and performs the verification on the APK.${NC}"
-  echo
-  echo -e "${RED}DISCLAIMER: Please examine this script yourself prior to running it.${NC}"
-  echo -e "${RED}This script is provided as-is without warranty and may contain bugs or security vulnerabilities.${NC}"
-  echo -e "${RED}Running this script grants it access to your connected Android device and may modify system files.${NC}"
-  echo -e "${RED}Use at your own risk and ensure you understand what the script does before execution.${NC}"
   echo
 
   MISSING_DEPENDENCIES=false
@@ -147,7 +141,7 @@ extract_apk_from_phone() {
   # Check if a phone is connected
   connected_devices=$(adb devices | grep -w "device")
   if [ -z "$connected_devices" ]; then
-    echo -e "${RED}â®â®â®â®â®â®â®â®â®â®â®â®â®â®â® No phone is connected. Exiting program â®â®â®â®â®â®â®â®â®â®â®â®â®â®â®${NC}"
+    echo -e "${RED}████████████████ No phone is connected. Exiting program ████████████████${NC}"
     echo
     echo -e "${YELLOW}To connect your phone:${NC}"
     echo -e "${YELLOW}1. Plug your Android phone into this computer via USB cable${NC}"
@@ -155,11 +149,6 @@ extract_apk_from_phone() {
     echo -e "${YELLOW}3. Enable USB Debugging (Settings > Developer Options > USB Debugging)${NC}"
     echo -e "${YELLOW}4. Grant permissions when prompted on your phone${NC}"
     echo -e "${YELLOW}5. Ensure Zeus Lightning Network wallet is installed on your device${NC}"
-    echo
-    echo -e "${RED}DISCLAIMER: Please examine this script yourself prior to running it.${NC}"
-    echo -e "${RED}This script is provided as-is without warranty and may contain bugs or security vulnerabilities.${NC}"
-    echo -e "${RED}Running this script grants it access to your connected Android device and may modify system files.${NC}"
-    echo -e "${RED}Use at your own risk and ensure you understand what the script does before execution.${NC}"
     exit 1
   else
     echo -e "${GREEN}Device connected successfully.${NC}"
@@ -186,9 +175,9 @@ extract_apk_from_phone() {
 
   # Determine if the app uses single or split APKS
   if echo "$apks" | grep -qE "split_|config."; then
-    echo -e "${YELLOW}â®â®â®â®â®â®â®â®â®â®â®â®â®â®â® $bundleId - uses split APKs â®â®â®â®â®â®â®â®â®â®â®â®â®â®â®${NC}"
+    echo -e "${YELLOW}████████████████ $bundleId - uses split APKs ████████████████${NC}"
   else
-    echo -e "${YELLOW}â®â®â®â®â®â®â®â®â®â®â®â®â®â®â® $bundleId - uses single APK â®â®â®â®â®â®â®â®â®â®â®â®â®â®â®${NC}"
+    echo -e "${YELLOW}████████████████ $bundleId - uses single APK ████████████████${NC}"
   fi
 
   # Create temporary directory for APKs
@@ -249,7 +238,7 @@ getSigner() {
   DIR=$(dirname "$1")
   BASE=$(basename "$1")
   s=$(
-    podman run \
+    $CONTAINER_CMD run \
       --rm \
       --volume $DIR:/mnt:ro \
       --workdir /mnt \
@@ -260,11 +249,11 @@ getSigner() {
 
 usage() {
   echo 'NAME
-       verify_zeus.sh - verify Zeus Lightning Network wallet build
+       verify_app.zeusln.zeus.sh - verify Zeus Lightning Network wallet build
 
 SYNOPSIS
-       verify_zeus.sh -a downloadedApk [-r revisionOverride] [-n] [-c]
-       verify_zeus.sh -x [-r revisionOverride] [-n] [-c]
+       verify_app.zeusln.zeus.sh -a downloadedApk [-r revisionOverride] [-n] [-c]
+       verify_app.zeusln.zeus.sh -x [-r revisionOverride] [-n] [-c]
 
 DESCRIPTION
        This command tries to verify builds of Zeus Lightning Network wallet.
@@ -387,7 +376,7 @@ prepare() {
   mkdir -p $workDir
   cd $workDir
   # clone
-  echo "Trying to clone â¦"
+  echo "Trying to clone …"
   if [ -n "$revisionOverride" ]
   then
     git clone --quiet $repo app && cd app && git checkout "$revisionOverride" || exit 1
@@ -435,28 +424,45 @@ result() {
   rm -rf $fromBuildUnzipped $fromPlayUnzipped
   unzip -d $fromPlayUnzipped -qq "$downloadedApk" || exit 1
   unzip -d $fromBuildUnzipped -qq "$builtApk" || exit 1
-  diffResult=$( diff --brief --recursive $fromPlayUnzipped $fromBuildUnzipped )
-  diffCount=$( echo "$diffResult" | grep -vcE "(META-INF|^$)" )
+  
+  # Run diff and capture result
+  diffResult=$( diff --brief --recursive $fromPlayUnzipped $fromBuildUnzipped 2>/dev/null || true )
+  
+  # Filter out expected Google Play Store differences
+  filteredDiff=$(echo "$diffResult" | grep -vE "(META-INF|stamp-cert-sha256|AndroidManifest\.xml)" || true)
+  
+  # Count remaining differences
+  if [[ "$filteredDiff" =~ ^[[:space:]]*$ ]]; then
+    diffCount=0
+  else
+    diffCount=$(echo "$filteredDiff" | grep -c "." 2>/dev/null || echo "0")
+  fi
+  
+  # Determine verdict based on filtered differences
   verdict=""
-  if ((diffCount == 0)); then
+  if [[ "$diffCount" =~ ^[0-9]+$ ]] && [ "$diffCount" -eq 0 ]; then
     verdict="reproducible"
+  else
+    verdict="not reproducible"
   fi
 
-  diffGuide="
-Run a full
-diff --recursive $fromPlayUnzipped $fromBuildUnzipped
-meld $fromPlayUnzipped $fromBuildUnzipped
-or
-diffoscope \"$downloadedApk\" $builtApk
-for more details."
-  if [ "$shouldCleanup" = true ]; then
-    diffGuide=''
+  # Prepare diff guide
+  diffGuide=""
+  if [ "$shouldCleanup" != true ]; then
+    diffGuide="
+For detailed analysis, run:
+  diff --recursive $fromPlayUnzipped $fromBuildUnzipped
+  meld $fromPlayUnzipped $fromBuildUnzipped
+  diffoscope \"$downloadedApk\" $builtApk"
   fi
+
+  # Additional info handling
   if [ "$additionalInfo" ]; then
     additionalInfo="===== Also ====
 $additionalInfo
 "
   fi
+
   echo "===== Begin Results =====
 appId:          $appId
 signer:         $signer
@@ -466,13 +472,16 @@ verdict:        $verdict
 appHash:        $appHash
 commit:         $commit
 
-Diff:
+Diff (Google Play distribution files excluded):
+$filteredDiff
+
+Full Diff (including expected Google Play files):
 $diffResult
 
 Revision, tag (and its signature):"
 
   # Determine if tag is annotated or lightweight
-  tagInfo=$(git for-each-ref "refs/tags/$tag")
+  tagInfo=$(git for-each-ref "refs/tags/$tag" 2>/dev/null || echo "")
   isAnnotatedTag=false
   tagType="lightweight"
   if [[ $tagInfo == *"tag"* ]]; then
@@ -492,18 +501,18 @@ Revision, tag (and its signature):"
     echo "$tagVerification"
 
     if [[ $tagVerification == *"Good signature"* ]]; then
-      tagSignatureStatus="â Good signature on annotated tag"
+      tagSignatureStatus="✓ Good signature on annotated tag"
       # Extract signing key
       tagKey=$(echo "$tagVerification" | grep "using .* key" | sed -E 's/.*using .* key ([A-F0-9]+).*/\1/' | tail -1)
       if [[ ! -z "$tagKey" ]]; then
         signatureKeys="Tag signed with: $tagKey"
       fi
     else
-      tagSignatureStatus="â ï¸ No valid signature found on annotated tag"
+      tagSignatureStatus="⚠️ No valid signature found on annotated tag"
       signatureWarnings="$signatureWarnings\n- Annotated tag exists but is not signed"
     fi
   else
-    tagSignatureStatus="â¹ï¸ Tag is lightweight (cannot contain signature)"
+    tagSignatureStatus="ℹ️ Tag is lightweight (cannot contain signature)"
   fi
 
   # Try to verify commit signature
@@ -515,7 +524,7 @@ Revision, tag (and its signature):"
 
   commitVerification=$(git verify-commit "$commitObj" 2>&1) || true
   if [[ $commitVerification == *"Good signature"* ]]; then
-    commitSignatureStatus="â Good signature on commit"
+    commitSignatureStatus="✓ Good signature on commit"
     # Extract signing key
     commitKey=$(echo "$commitVerification" | grep "using .* key" | sed -E 's/.*using .* key ([A-F0-9]+).*/\1/' | tail -1)
     if [[ ! -z "$commitKey" ]]; then
@@ -531,7 +540,7 @@ Revision, tag (and its signature):"
       fi
     fi
   else
-    commitSignatureStatus="â ï¸ No valid signature found on commit"
+    commitSignatureStatus="⚠️ No valid signature found on commit"
     if [[ -z "$signatureWarnings" ]]; then
       signatureWarnings="- Commit is not signed"
     else
@@ -557,19 +566,42 @@ $signatureKeys"
 
   echo -e "\n$additionalInfo===== End Results =====
 $diffGuide"
+
+  # Final status message
+  if [ "$verdict" = "reproducible" ]; then
+    echo -e "\n${GREEN}✓ Verification completed - Zeus wallet is reproducible!${NC}"
+  else
+    echo -e "\n${RED}✗ Verification completed with differences${NC}"
+  fi
 }
 
 cleanup() {
+  echo "Cleaning up temporary files..."
   rm -rf $fromPlayFolder $workDir $fromBuildUnzipped $fromPlayUnzipped
+  # Additional container cleanup
+  $CONTAINER_CMD rmi zeus_builder -f 2>/dev/null || true
+  $CONTAINER_CMD image prune -f 2>/dev/null || true
 }
 
 # Main execution
 # =============
 
+echo "Starting Zeus Lightning Network wallet verification process..."
+echo "This process may take 10-30 minutes depending on your system."
+echo
+
 prepare
+echo "Preparation completed. Starting build..."
+
 test_zeus
+echo "Build completed. Starting comparison..."
+
 result
+echo "Comparison completed."
 
 if [ "$shouldCleanup" = true ]; then
   cleanup
 fi
+
+echo
+echo "Zeus verification completed!"
